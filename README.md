@@ -1,29 +1,60 @@
 # PNGlyph
 
-A small, standalone tool for turning a set of PNG stroke-skeleton images
-(one file per character, named `u<hex>.png`, e.g. `u0041.png` = `A`) into
-a real TTF font -- with live visual editing, not a one-shot script. This
-program was entirely built with Claude AI.
+**Trace PNG glyph images into TrueType fonts for PCB / EDA use.**
 
-Everything here came out of a real, iterative font-building project
-(reverse-engineering an Ultiboard stroke font); the GUI wraps the exact
-geometry engine validated against that project, generalized so it works
-against any similarly-shaped source set.
+PNGlyph is a standalone desktop tool (Python / PySide6) that turns a set of
+PNG stroke-skeleton images -- one file per character, named `u<hex>.png`
+(e.g. `u0041.png` = `A`) -- into a real `.ttf` font, with live visual
+editing rather than a one-shot script. Glyphs can also be built from
+on-screen captures, which makes it practical for recreating the stroke fonts
+used by classic PCB software such as Ultiboard, for use in KiCad and
+elsewhere.
 
-## Documentation
+![The PNGlyph main window with glyph "3" open for editing](docs/images/main-window.png)
 
-- **[Getting started](docs/getting-started.md)** — opening a source folder, the glyph list, undo/redo, saving/naming a project, your first export
-- **[Adding glyphs](docs/adding-glyphs.md)** — the Add Glyph dialog, File vs. Blank, assigning codepoints to one or more files
-- **[Capture mode](docs/capture.md)** — building glyphs from on-screen screen-grabs, the Capture window, reviewing and assigning captures
-- **[Selection and editing](docs/selection-and-editing.md)** — plain/Shift/Ctrl click, groups vs. polylines, the disambiguation popup, Cut/Copy/Paste, Exclude/Include
-- **[Drawing](docs/drawing.md)** — the pen tool, angle-snap while drawing
-- **[Snapping](docs/snapping.md)** — grid, segments, x-height/baseline, the held-key overrides
-- **[Weight and Size](docs/size-and-weight.md)** — stroke weight, and the Size panel (Flatten/Stretch, linked X/Y)
-- **[Metrics and canvas](docs/metrics-and-canvas.md)** — the Canvas panel, vertical metrics, clearance check, line endings
-- **[Export](docs/export.md)** — producing a `.ttf`, metadata, coverage, multi-weight batch export
-- **[Reference](docs/reference.md)** — every toolbar command and keyboard shortcut in one place
+> ### Legal Notice
+>
+> This is an independent, open-source project. It is not affiliated with,
+> sponsored by, or endorsed by National Instruments, the Ultiboard
+> trademark holder, or by the KiCad project. "Ultiboard" is a registered
+> trademark of National Instruments; "KiCad" is the name of a free software
+> suite for electronic design automation. All product names are used for
+> identification and compatibility purposes only.
+>
+> This tool is provided "as-is", without warranty of any kind. You are
+> responsible for making sure you have the right to use and distribute
+> any source images you trace and any fonts you generate from them.
 
-## Features
+## License & Originality
+
+PNGlyph is licensed under the **GNU General Public License v3.0 or later
+(GPLv3+)** -- see [LICENSE](LICENSE). It uses the same license as its
+sibling projects, KIUB and KIUC.
+
+Copyright (C) 2026 Snieffy
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+Public License for more details.
+
+### Development History
+
+PNGlyph grew out of a real, iterative font-building project: the
+reverse-engineering of an Ultiboard stroke font. The GUI wraps the same
+geometry engine that was validated against that project, generalized so it
+works against any similarly shaped set of source images. The program was
+written entirely with the help of Claude AI.
+
+## Related projects
+
+PNGlyph is part of a small family of tools for working with legacy Ultiboard
+and Ultiboard-era designs in KiCad:
+
+- **[KIUB](https://github.com/Snieffy/ultiboard-ddf-to-kicad-converter)** -- Ultiboard DDF to KiCad PCB converter
+- **[KIUC](https://github.com/Snieffy/ulticap-sch-to-kicad-converter)** -- Ulticap schematic to KiCad converter
+
+## Key Features
 
 - Import a folder of `u<hex>.png` files, auto-calibrate cap height /
   x-height / baseline / descender / advance width from reference glyphs
@@ -94,15 +125,15 @@ pip install PySide6 fonttools shapely scikit-image opencv-python-headless \
 python3 pnglyph.py
 ```
 
-## License
+## Documentation
 
-PNGlyph is free software, released under the
-[GNU General Public License, version 3](../LICENSE) (or, at your option,
-any later version) -- the same license as KIUB and KIUC.
-
-Copyright (C) 2026 Snieffy
-
-This program is distributed in the hope that it will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
-Public License for more details.
+- **[Getting started](docs/getting-started.md)** — opening a source folder, the glyph list, undo/redo, saving/naming a project, your first export
+- **[Adding glyphs](docs/adding-glyphs.md)** — the Add Glyph dialog, File vs. Blank, assigning codepoints to one or more files
+- **[Capture mode](docs/capture.md)** — building glyphs from on-screen screen-grabs, the Capture window, reviewing and assigning captures
+- **[Selection and editing](docs/selection-and-editing.md)** — plain/Shift/Ctrl click, groups vs. polylines, the disambiguation popup, Cut/Copy/Paste, Exclude/Include
+- **[Drawing](docs/drawing.md)** — the pen tool, angle-snap while drawing
+- **[Snapping](docs/snapping.md)** — grid, segments, x-height/baseline, the held-key overrides
+- **[Weight and Size](docs/size-and-weight.md)** — stroke weight, and the Size panel (Flatten/Stretch, linked X/Y)
+- **[Metrics and canvas](docs/metrics-and-canvas.md)** — the Canvas panel, vertical metrics, clearance check, line endings
+- **[Export](docs/export.md)** — producing a `.ttf`, metadata, coverage, multi-weight batch export
+- **[Reference](docs/reference.md)** — every toolbar command and keyboard shortcut in one place
