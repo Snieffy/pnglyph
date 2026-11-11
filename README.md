@@ -1,60 +1,51 @@
-# PNGlyph
+# PNGlyph: PNG glyph images to TrueType fonts
+**Version:** 2.0 | **Python:** 3.10+ | **License:** GPLv3 | **GUI:** PySide6 (Qt 6)
 
-**Trace PNG glyph images into TrueType fonts for PCB / EDA use.**
+A small, standalone tool for turning a set of PNG stroke-skeleton images
+(one file per character, named `u<hex>.png`, e.g. `u0041.png` = `A`) into
+a real TTF font -- with live visual editing, not a one-shot script. Glyphs
+can also be captured straight from the screen, or drawn from scratch.
 
-PNGlyph is a standalone desktop tool (Python / PySide6) that turns a set of
-PNG stroke-skeleton images -- one file per character, named `u<hex>.png`
-(e.g. `u0041.png` = `A`) -- into a real `.ttf` font, with live visual
-editing rather than a one-shot script. Glyphs can also be built from
-on-screen captures, which makes it practical for recreating the stroke fonts
-used by classic PCB software such as Ultiboard, for use in KiCad and
-elsewhere.
+Everything here came out of a real, iterative font-building project
+(reverse-engineering a stroke font from a legacy PCB design program); the
+GUI wraps the exact geometry engine validated against that project,
+generalized so it works against any similarly-shaped source set.
 
-![The PNGlyph main window with glyph "3" open for editing](docs/images/main-window.png)
+Sibling project: [KIUT -- Ulticap and Ultiboard designs to KiCad](https://github.com/Snieffy/ulticap-ultiboard-to-kicad-converter).
 
-> ### Legal Notice
->
-> This is an independent, open-source project. It is not affiliated with,
-> sponsored by, or endorsed by National Instruments, the Ultiboard
-> trademark holder, or by the KiCad project. "Ultiboard" is a registered
-> trademark of National Instruments; "KiCad" is the name of a free software
-> suite for electronic design automation. All product names are used for
-> identification and compatibility purposes only.
->
-> This tool is provided "as-is", without warranty of any kind. You are
-> responsible for making sure you have the right to use and distribute
-> any source images you trace and any fonts you generate from them.
+---
 
-## License & Originality
+## Contents
 
-PNGlyph is licensed under the **GNU General Public License v3.0 or later
-(GPLv3+)** -- see [LICENSE](LICENSE). It uses the same license as its
-sibling projects, KIUB and KIUC.
+### In this README
 
-Copyright (C) 2026 Snieffy
+- [Features](#features)
+- [Running it](#running-it)
+- [Architecture](#architecture)
+- [What's new in 2.0](#whats-new-in-20)
+- [License](#license)
+- [Contributing](#contributing)
 
-This program is distributed in the hope that it will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
-Public License for more details.
+### Using PNGlyph
 
-### Development History
+The same documents open inside the program under **Help**.
 
-PNGlyph grew out of a real, iterative font-building project: the
-reverse-engineering of an Ultiboard stroke font. The GUI wraps the same
-geometry engine that was validated against that project, generalized so it
-works against any similarly shaped set of source images. The program was
-written entirely with the help of Claude AI.
+| Document | What it covers |
+|---|---|
+| [Getting started](docs/getting-started.md) | opening a source folder, the glyph list, undo/redo, naming, renaming and saving a project, dots and small marks, your first export |
+| [Adding glyphs](docs/adding-glyphs.md) | the Add Glyph dialog and its character table, File vs. Blank, assigning codepoints to one or more files |
+| [Capture mode](docs/capture.md) | building glyphs from screen-grabs, the Capture window, the character table, assigning codes from a text file |
+| [Selection and editing](docs/selection-and-editing.md) | plain/Shift/Ctrl click, groups vs. polylines, the disambiguation popup, Cut/Copy/Paste, Reassign, Exclude/Include |
+| [Drawing](docs/drawing.md) | the pen tool, dots, leaving draw mode, angle-snap while drawing |
+| [Snapping](docs/snapping.md) | grid and grid alignment, segments, x-height/baseline, the held-key overrides |
+| [Weight and Size](docs/size-and-weight.md) | stroke weight, and the Size panel (Flatten/Stretch, linked X/Y) |
+| [Metrics and canvas](docs/metrics-and-canvas.md) | the Canvas panel, vertical metrics, clearance check, line endings |
+| [Export](docs/export.md) | producing a `.ttf`, metadata, coverage, multi-weight batch export |
+| [Reference](docs/reference.md) | every menu, toolbar command and keyboard shortcut in one place |
 
-## Related projects
+---
 
-PNGlyph is part of a small family of tools for working with legacy Ultiboard
-and Ultiboard-era designs in KiCad:
-
-- **[KIUB](https://github.com/Snieffy/ultiboard-ddf-to-kicad-converter)** -- Ultiboard DDF to KiCad PCB converter
-- **[KIUC](https://github.com/Snieffy/ulticap-sch-to-kicad-converter)** -- Ulticap schematic to KiCad converter
-
-## Key Features
+## Features
 
 - Import a folder of `u<hex>.png` files, auto-calibrate cap height /
   x-height / baseline / descender / advance width from reference glyphs
@@ -65,6 +56,16 @@ and Ultiboard-era designs in KiCad:
   arcs, built up from short segments instead) with grid/segment/
   x-height snap and angle-snap, onion-skin reference against a
   neighboring glyph
+- Screen capture sessions with readable thumbnails, a built-in
+  character table (full CP437 set, bundled DejaVu Sans Mono) and
+  "Assign from text file" -- codes for a whole session from a text
+  file in the source's own codepage (CP437 screen glyphs, CP850, ...)
+- Dots: single-point strokes, drawn or traced from small separate marks
+- Reassign a glyph to another code (swap or replace), rename a project
+  (optionally with its folder)
+- Classic text menus (File, Edit, Glyph, View, Help) alongside the icon
+  toolbar, which can be hidden
+- Grid alignment to any point, for exact grid-step moves
 - Full point/segment/polyline/group selection model, with a
   disambiguation popup for genuinely ambiguous clicks; Cut, Copy, Paste
 - Snap to grid, to segments (points and lines, weight-independent),
@@ -88,27 +89,56 @@ and Ultiboard-era designs in KiCad:
   monospaced or proportional advance, name-table metadata, a
   glyph-coverage report, and multi-weight batch export
 
+[↑ Contents](#contents)
+
+---
+
+## Running it
+
+```
+pip install -r requirements.txt
+python3 pnglyph.py
+```
+
+or, without the requirements file:
+
+```
+pip install PySide6 fonttools shapely scikit-image opencv-python-headless \
+            scipy networkx numpy Pillow
+```
+
+[↑ Contents](#contents)
+
+---
+
 ## Architecture
 
 ```
 core/            Pure Python, no Qt. Fully independent of the GUI.
-  tracing.py       PNG -> skeleton -> polylines
+  tracing.py       PNG -> skeleton -> polylines (incl. dots for small marks)
   geometry.py      thickening (buffering) + edit operations (move,
                    delete, add, flatten/flatten_xy, offset, break_path,
                    join_paths)
   calibration.py   auto-detect the metrics grid from reference glyphs
   project.py       .pnglyph.json save/load, the edit-recipe data model
   coverage.py      glyph-coverage report by Unicode block
+  codepages.py     legacy codepage -> Unicode (CP437 screen glyphs, ...)
   font_export.py   Project -> .ttf via fontTools
 
 gui/             PySide6. Only talks to core/ -- no geometry logic here.
   canvas_view.py    QGraphicsView-based live editor (points, guides,
                     ink, selection, snapping, the disambiguation popup)
   main_window.py    glyph browser + canvas + properties panel + toolbar
+                    and menus, and the project/glyph dialogs
+  codepoint_entry.py  codepoint field + the character table (picker)
   export_dialog.py  Export/Metadata/Coverage tabs, multi-weight batch export
+  help_dialog.py    in-app viewer for README.md and docs/
   icons.py          toolbar icon generation
   style.py          shared colors and QSS
   render_utils.py   shared glyph-pixmap rendering (list icons, onion skin)
+  fonts/            bundled DejaVu Sans Mono (character table)
+  capture/          screen capture: overlay, session store, Capture
+                    window, thumbnails, Assign from text file
 
 pnglyph.py       Entry point: `python3 pnglyph.py`
 ```
@@ -117,23 +147,60 @@ Each `core/geometry.py` edit function is a small, pure, independently
 testable operation -- the same primitives a GUI drag calls interactively
 and a saved recipe step replays non-interactively.
 
-## Running it
+[↑ Contents](#contents)
 
-```
-pip install PySide6 fonttools shapely scikit-image opencv-python-headless \
-            scipy networkx numpy Pillow
-python3 pnglyph.py
-```
+---
 
-## Documentation
+## What's new in 2.0
 
-- **[Getting started](docs/getting-started.md)** — opening a source folder, the glyph list, undo/redo, saving/naming a project, your first export
-- **[Adding glyphs](docs/adding-glyphs.md)** — the Add Glyph dialog, File vs. Blank, assigning codepoints to one or more files
-- **[Capture mode](docs/capture.md)** — building glyphs from on-screen screen-grabs, the Capture window, reviewing and assigning captures
-- **[Selection and editing](docs/selection-and-editing.md)** — plain/Shift/Ctrl click, groups vs. polylines, the disambiguation popup, Cut/Copy/Paste, Exclude/Include
-- **[Drawing](docs/drawing.md)** — the pen tool, angle-snap while drawing
-- **[Snapping](docs/snapping.md)** — grid, segments, x-height/baseline, the held-key overrides
-- **[Weight and Size](docs/size-and-weight.md)** — stroke weight, and the Size panel (Flatten/Stretch, linked X/Y)
-- **[Metrics and canvas](docs/metrics-and-canvas.md)** — the Canvas panel, vertical metrics, clearance check, line endings
-- **[Export](docs/export.md)** — producing a `.ttf`, metadata, coverage, multi-weight batch export
-- **[Reference](docs/reference.md)** — every toolbar command and keyboard shortcut in one place
+- **Capture:** a character table beside the capture rows (full CP437 set,
+  larger characters, codes already in use shown in amber), readable
+  thumbnails, and **Assign from text file** -- codes for a whole session
+  from a text file in the source's own codepage.
+- **Dots:** single-point strokes can be drawn, and small separate marks
+  (the dot of an i, j, !, :) are traced as dots instead of being dropped.
+- **Glyphs:** Reassign a glyph to another code (Swap or Replace); the
+  character table in the Add Glyph and Reassign dialogs, with a live
+  "already in use" check.
+- **Projects:** Rename project, optionally renaming its folder too.
+- **Menus:** classic text menus alongside the icon toolbar (View -> Icon
+  toolbar hides it).
+- **Editing:** right-drag pans while a paste is attached; Esc or the
+  right-click menu leaves draw mode; the grid can be aligned to any point.
+
+[↑ Contents](#contents)
+
+---
+
+## License
+
+PNGlyph is free software, released under the
+[GNU General Public License, version 3](LICENSE) (or, at your option,
+any later version) -- the same license as
+[KIUT](https://github.com/Snieffy/ulticap-ultiboard-to-kicad-converter).
+
+Copyright (C) 2026 Snieffy
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+Public License for more details.
+
+The character table uses the bundled **DejaVu Sans Mono** font
+(`gui/fonts/DejaVuSansMono.ttf`), distributed under its own free license
+-- see `gui/fonts/DejaVu-LICENSE.txt`.
+
+This program was entirely built with Claude AI.
+
+[↑ Contents](#contents)
+
+---
+
+## Contributing
+
+Contributions are welcome! If you find a source set PNGlyph doesn't trace
+well, or a font it doesn't export correctly, please open an issue or
+submit a pull request.\
+As this project is GPLv3, all derivatives must remain open and free.
+
+[↑ Contents](#contents)

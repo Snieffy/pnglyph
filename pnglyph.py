@@ -90,6 +90,20 @@ def main():
         input("Press Enter to exit...")
         sys.exit(1)
 
+    # Silences Qt's "OpenType support missing for <font>, script N"
+    # console spam. Harmless: it fires when a text item contains a
+    # script (seen: 9 = Syriac, 66 = N'Ko) that none of the installed
+    # fallback fonts have shaping tables for -- which the character
+    # picker's search used to trigger by listing such letters. The
+    # picker no longer searches those scripts at all (see
+    # codepoint_entry._SEARCH_BLOCKS); this rule is the backstop, set
+    # before QApplication so it covers the font database's own startup.
+    try:
+        from PySide6.QtCore import QLoggingCategory
+        QLoggingCategory.setFilterRules("qt.text.font.db.warning=false")
+    except Exception:
+        pass   # cosmetic only -- never block startup on it
+
     app = QApplication(sys.argv)
     # PNGlyph's capture-session flow deliberately hides the main window
     # and shows/hides the capture window and overlay independently of
