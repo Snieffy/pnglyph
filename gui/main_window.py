@@ -4,21 +4,23 @@ import os
 import copy
 import math
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize, QRectF, QPointF, QPoint, QTimer, Signal, QEvent
+from PySide6.QtCore import Qt, QSize, QRectF, QPointF, QPoint, QTimer, Signal, QEvent, QObject
 from PySide6.QtGui import QFont, QAction, QColor, QBrush, QKeySequence, QPixmap, QPainter, QPen, QFontDatabase, QIcon, QImage, QFontMetrics, QCursor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QListWidget, QListWidgetItem, QSplitter, QSplitterHandle, QVBoxLayout,
     QHBoxLayout, QGridLayout, QLabel, QSlider, QSpinBox, QComboBox, QLineEdit, QPushButton, QFileDialog,
     QToolBar, QStatusBar, QMessageBox, QGroupBox, QFormLayout, QCheckBox,
     QAbstractItemView,
-    QDoubleSpinBox, QProgressDialog, QApplication, QInputDialog, QDialog, QDialogButtonBox, QMenu,
-    QSizePolicy, QFrame, QScrollArea,
+    QDoubleSpinBox, QApplication, QInputDialog, QDialog, QDialogButtonBox, QMenu,
+    QSizePolicy, QFrame, QScrollArea, QProgressBar,
 )
 from dataclasses import dataclass as _dataclass
 
 from core import tracing, calibration, geometry
+from core.codepages import BYTE_CODEPAGES, byte_to_char
 from core.project import Project, FontSettings, Metrics, EditStep, GlyphRecipe, auto_vertical_metrics
 from .canvas_view import GlyphCanvas, paste_anchor_point
 from .render_utils import render_glyph_pixmap
@@ -2248,6 +2250,62 @@ def _guess_codepoint_from_filename(filename: str) -> int | None:
     return None
 
 
+def _byte_number_from_filename(filename: str) -> int | None:
+    """The plain decimal number a filename's stem consists of ENTIRELY
+    ("065.png" -> 65, "7.png" -> 7), or None for anything else ("A.png",
+    "u0041.png", "glyph65.png"). Used only by the assignment window's
+    opt-in "Filenames are character codes in code page" -- never as an
+    automatic guess on its own: a bare number carries no meaning until
+    the user says which codepage it's a byte of, which is exactly why
+    _guess_codepoint_from_filename (the automatic, no-questions guess)
+    still ignores it. Typical source: an exported bitmap/vector font
+    whose glyphs were written out as 000.png..255.png in byte order.
+
+    ASCII digits only (str.isdigit alone would also accept e.g. "²" or
+    Arabic-Indic digits, which no such export would ever produce)."""
+    stem = os.path.splitext(filename)[0]
+    if stem and all("0" <= c <= "9" for c in stem):
+        return int(stem)
+    return None
+
+
+def _natural_name_key(filename: str):
+    """Case-insensitive filename sort key that orders embedded numbers by
+    VALUE -- "9.png" before "10.png", "glyph2" before "glyph10" -- for
+    rows with no codepoint to sort by. Plain string order only happens
+    to be right when every number is zero-padded to the same width."""
+    import re
+    return [(0, int(part)) if part.isdigit() else (1, part)
+            for part in re.split(r"(\d+)", filename.lower()) if part]
+
+
+class _InputBlocker(QObject):
+    """Application-wide event filter used by MainWindow._status_progress:
+    swallows mouse, wheel, keyboard and shortcut input aimed at the main
+    window (or anything inside it) while a long operation runs, without
+    disabling any widget -- so the status-bar progress bar keeps its
+    normal, un-greyed look. Paint, resize and timer events pass through
+    untouched, which is what keeps the bar animating. Other top-level
+    windows (e.g. a dialog that's about to open) are unaffected."""
+
+    _BLOCKED = {
+        QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick,
+        QEvent.MouseMove, QEvent.Wheel, QEvent.KeyPress, QEvent.KeyRelease,
+        QEvent.Shortcut, QEvent.ShortcutOverride, QEvent.ContextMenu,
+        QEvent.HoverEnter, QEvent.HoverMove, QEvent.DragEnter, QEvent.Drop,
+    }
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+
+    def eventFilter(self, obj, event):
+        if event.type() in self._BLOCKED and isinstance(obj, QWidget) \
+                and obj.window() is self._window:
+            return True
+        return False
+
+
 class MultiFileAssignmentDialog(PickerPanelMixin, QDialog):
     """Codepoint assignment for one or more already-existing PNG files
     picked via "Add a new glyph -> File..." (see AddGlyphDialog.
@@ -2273,7 +2331,7 @@ class MultiFileAssignmentDialog(PickerPanelMixin, QDialog):
     every other add-glyph flow already uses -- staging-aware, undo-
     aware, with no separate, parallel logic of its own to keep in sync."""
 
-    def __init__(self, file_paths: list[str], existing_codepoints_cb, parent=None):
+    def __init__(self, file_paths: list[str], existing_codepoints_cb, parent=None, progress_cb=None):
         super().__init__(parent)
         self.setWindowTitle("Assign codepoints")
         self._existing_codepoints_cb = existing_codepoints_cb
@@ -2295,6 +2353,47 @@ class MultiFileAssignmentDialog(PickerPanelMixin, QDialog):
         intro_row.addWidget(intro, 1)
         intro_row.addWidget(self._make_panel_button())
         layout.addLayout(intro_row)
+
+        # "Filenames are character codes in code page" -- built (but only
+        # SHOWN, see the end of __init__) when at least one file is named
+        # with nothing but a number, e.g. the 000.png..265.png a font
+        # export writes out in byte order. Opt-in, unticked every batch:
+        # see _apply_byte_filenames for what it fills and what it
+        # deliberately leaves alone.
+        self._byte_auto: dict[int, int] = {}   # seq -> codepoint THIS option filled in
+        # Checkbox on its own line, code-page list on the line below it at
+        # the full width of the row list -- side by side, the long code-page
+        # labels got truncated to "CP437 – D...s ☺...▼, ⌂)" in the drop-down
+        # itself, leaving the entries impossible to tell apart.
+        byte_box = QVBoxLayout()
+        self._byte_check = QCheckBox("Filenames are character codes in code page:")
+        self._byte_check.setToolTip(
+            "For files named only with a number (000.png, 065.png, 255.png...),\n"
+            "as written out by a font exporter in character-code order: each\n"
+            "number is read as a character code (0-255) of the chosen code page,\n"
+            "and the row gets that character -- e.g. CP437 065 = A, 001 = \u263a.\n"
+            "Numbers above 255, and codes with no glyph, stay blank.\n"
+            "Codes you typed or picked yourself are never replaced.")
+        self._byte_check.toggled.connect(self._on_byte_option_changed)
+        byte_box.addWidget(self._byte_check)
+        self._byte_combo = QComboBox()
+        for cp_id, label in BYTE_CODEPAGES:
+            self._byte_combo.addItem(label, cp_id)
+        remembered = self._byte_combo.findData(app_settings.get_byte_filename_codepage())
+        self._byte_combo.setCurrentIndex(remembered if remembered >= 0 else 0)
+        self._byte_combo.currentIndexChanged.connect(self._on_byte_codepage_changed)
+        self._byte_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        byte_box.addWidget(self._byte_combo)
+        self._byte_widget = QWidget()
+        self._byte_widget.setLayout(byte_box)
+        byte_box.setContentsMargins(0, 0, 0, 0)
+        self._byte_widget.setVisible(False)
+        layout.addWidget(self._byte_widget)
+        self._byte_summary = QLabel("")
+        self._byte_summary.setWordWrap(True)
+        self._byte_summary.setStyleSheet("color: #888; font-size: 10px;")
+        self._byte_summary.setVisible(False)
+        layout.addWidget(self._byte_summary)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -2360,12 +2459,19 @@ class MultiFileAssignmentDialog(PickerPanelMixin, QDialog):
         order = sorted(
             range(len(file_paths)),
             key=lambda i: (0, guessed[i]) if guessed[i] is not None
-                          else (1, os.path.basename(file_paths[i]).lower()))
+                          else (1, _natural_name_key(os.path.basename(file_paths[i]))))
 
+        # progress_cb(done): reports row building -- each row reads its
+        # PNG for a thumbnail and the flatness check, the slow part of
+        # opening this window for a few hundred files. Reported by the
+        # CALLER (MainWindow, in its own status bar), since this dialog
+        # isn't on screen yet while its rows are being built.
         for seq, i in enumerate(order):
             path = file_paths[i]
             item = _PendingFileItem(seq=seq, filename=os.path.basename(path), codepoint=guessed[i], file_path=path)
             self._add_row(item)
+            if progress_cb is not None:
+                progress_cb(seq + 1)
             if guessed[i] is not None:
                 # editingFinished never fires for a value set
                 # programmatically at construction time, only for an
@@ -2378,6 +2484,11 @@ class MultiFileAssignmentDialog(PickerPanelMixin, QDialog):
                 self._on_row_commit(seq)
 
         layout.addWidget(self._overwrite_check)
+
+        self._byte_numbers: dict[int, int] = {
+            seq: n for seq, path in self._file_paths.items()
+            if (n := _byte_number_from_filename(os.path.basename(path))) is not None}
+        self._byte_widget.setVisible(bool(self._byte_numbers))
 
         btn_row = QHBoxLayout()
         self._add_btn = QPushButton("Add All Assigned")
@@ -2392,6 +2503,106 @@ class MultiFileAssignmentDialog(PickerPanelMixin, QDialog):
 
     _ROW_NOUN = "file"
     _EMPTY_HINT = "No files left in this batch."
+
+    # -- "Filenames are character codes in code page" ---------------------------
+
+    def _on_byte_option_changed(self, _checked: bool) -> None:
+        self._apply_byte_filenames()
+
+    def _on_byte_codepage_changed(self, _index: int) -> None:
+        app_settings.remember_byte_filename_codepage(self._byte_combo.currentData())
+        if self._byte_check.isChecked():
+            self._apply_byte_filenames()
+
+    def _clear_byte_auto(self) -> None:
+        """Blanks every row this option filled in that still holds
+        exactly that value -- a row the user has since retyped or picked
+        from the table is theirs now and stays as it is."""
+        for seq, cp in self._byte_auto.items():
+            row = self._rows.get(seq)
+            if row is not None and row.current_codepoint() == cp:
+                row.set_codepoint_silently(None)
+        self._byte_auto = {}
+
+    def _apply_byte_filenames(self) -> None:
+        """(Re)fills every number-named row from its byte in the chosen
+        codepage, or clears what it filled when unticked.
+
+        Only rows that are still blank -- or still hold this option's own
+        earlier value (a codepage switch) -- are touched; anything typed,
+        picked, or guessed from a u<hex> name is left alone. What can't be
+        filled stays blank, and the summary line under the checkbox says
+        how many and why, rather than one popup per row:
+          - numbers above 255 (not a byte -- e.g. a font file's extra,
+            redundant entries) and bytes with no glyph in this codepage;
+          - a character another row in this batch already has, or that
+            two number-named files would both get (both left blank, the
+            same rule the u<hex> guess uses);
+          - a character already in the project, unless "Overwrite
+            existing glyphs without asking" is ticked -- asked ONCE for
+            the whole batch instead, since a 256-file font is exactly the
+            case where per-row confirmations would mean 256 popups."""
+        self._clear_byte_auto()
+        if not self._byte_check.isChecked():
+            self._byte_summary.setVisible(False)
+            self._refresh_marks()
+            return
+
+        codepage = self._byte_combo.currentData()
+        no_glyph = 0
+        proposed: dict[int, int] = {}
+        for seq, n in self._byte_numbers.items():
+            row = self._rows.get(seq)
+            if row is None or row.current_codepoint() is not None:
+                continue   # deleted, or already has a code of the user's own
+            ch, _problem = byte_to_char(n, codepage)
+            if ch is None:
+                no_glyph += 1
+            else:
+                proposed[seq] = ord(ch)
+
+        taken = {row.current_codepoint() for seq, row in self._rows.items()
+                 if seq not in proposed and row.current_codepoint() is not None}
+        counts: dict[int, int] = {}
+        for cp in proposed.values():
+            counts[cp] = counts.get(cp, 0) + 1
+        duplicates = {seq for seq, cp in proposed.items() if counts[cp] > 1 or cp in taken}
+        for seq in duplicates:
+            del proposed[seq]
+
+        existing = self._existing_codepoints_cb()
+        in_project = {seq for seq, cp in proposed.items() if cp in existing}
+        skipped_existing = 0
+        if in_project and not self._overwrite_check.isChecked():
+            box = QMessageBox(
+                QMessageBox.Question, "Already in this project",
+                (f"{len(in_project)} of these characters are already in this project.\n\n"
+                 if len(in_project) > 1 else
+                 "One of these characters is already in this project.\n\n") +
+                "Assign them anyway? They will replace the existing glyphs when added.\n"
+                "Choose No to leave those rows blank.",
+                QMessageBox.Yes | QMessageBox.No, self)
+            box.setDefaultButton(QMessageBox.No)
+            if box.exec() != QMessageBox.Yes:
+                for seq in in_project:
+                    del proposed[seq]
+                skipped_existing = len(in_project)
+
+        for seq, cp in proposed.items():
+            self._rows[seq].set_codepoint_silently(cp)
+        self._byte_auto = dict(proposed)
+
+        parts = [f"Filled {len(proposed)} of {len(self._byte_numbers)} numbered files."]
+        if no_glyph:
+            parts.append(f"{no_glyph} left blank: above 255 or no glyph in this code page.")
+        if duplicates:
+            parts.append(f"{len(duplicates)} left blank: character already used in this batch.")
+        if skipped_existing:
+            parts.append(f"{skipped_existing} left blank: already in this project.")
+        self._byte_summary.setText(" ".join(parts))
+        self._byte_summary.setVisible(True)
+        self._refresh_marks()
+        self._update_panel_hint()
 
     def _add_row(self, item: _PendingFileItem) -> None:
         # item.file_path doubles as its own thumbnail source -- these
@@ -3627,6 +3838,23 @@ class MainWindow(QMainWindow):
         # happens or another message replaces it.
         self.status_message_label = QLabel("")
         self.statusBar().addWidget(self.status_message_label)
+        # status_progress: the ONE progress indicator for every slow,
+        # whole-batch operation (project load, folder import, batch
+        # File... add, capture commit, reading a file batch into the
+        # assignment window) -- lives right after status_message_label,
+        # which carries its text ("Reading glyphs..."), and is hidden
+        # whenever nothing is running. Replaces the earlier pop-up
+        # QProgressDialog used only by project load/import, so every
+        # long operation reports progress the same way, in the same
+        # place. Driven exclusively through _status_progress below.
+        self.status_progress = QProgressBar()
+        self.status_progress.setFixedWidth(180)
+        self.status_progress.setMaximumHeight(16)
+        self.status_progress.setTextVisible(True)
+        self.status_progress.setFormat("%v / %m")
+        self.status_progress.setVisible(False)
+        self.statusBar().addWidget(self.status_progress)
+        self._busy_filter = None
         # project_name_label: this project's own name (whatever it was
         # saved/will be saved as) and its folder -- the persistent
         # replacement for the old "Saved <full path>" transient
@@ -4908,10 +5136,12 @@ class MainWindow(QMainWindow):
                     # and confirmation.
                     assignments = self._try_immediate_multi_file_import(dialog.multi_file_paths)
                     if assignments is None:
-                        assignment_dialog = MultiFileAssignmentDialog(
-                            dialog.multi_file_paths,
-                            existing_codepoints_cb=lambda: set(self.project.glyphs.keys()),
-                            parent=self)
+                        with self._status_progress("Reading files\u2026",
+                                                   len(dialog.multi_file_paths)) as step:
+                            assignment_dialog = MultiFileAssignmentDialog(
+                                dialog.multi_file_paths,
+                                existing_codepoints_cb=lambda: set(self.project.glyphs.keys()),
+                                parent=self, progress_cb=step)
                         if assignment_dialog.exec() != QDialog.Accepted:
                             continue   # cancelled the whole batch -- back to a fresh AddGlyphDialog
                         assignments = assignment_dialog.get_assignments()
@@ -5108,7 +5338,7 @@ class MainWindow(QMainWindow):
             added += 1
         if added == 0:
             return 0
-        self._refresh_glyph_list()
+        self._refresh_glyph_list(show_progress=True)   # traces every new glyph -- the slow part
         self._load_glyph_into_canvas(last_cp)
         self._select_glyph_in_list(last_cp)
         self._set_status_message(
@@ -5331,7 +5561,7 @@ class MainWindow(QMainWindow):
             any_added = True
 
         if any_added:
-            self._refresh_glyph_list()
+            self._refresh_glyph_list(show_progress=True)   # traces every new glyph -- the slow part
             first_committed_cp = next(
                 (cp for _seq, cp, _path in assigned if _seq in committed_seqs), None)
             if first_committed_cp is not None:
@@ -5936,62 +6166,32 @@ class MainWindow(QMainWindow):
             return
         self.glyph_list.setIconSize(self._icon_size())
         cps = sorted(self.project.glyphs)
-        progress = None
-        if show_progress and len(cps) > 20:   # not worth a dialog for a handful of glyphs
-            progress = QProgressDialog("Reading glyphs…", None, 0, len(cps), self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(300)
-            progress.setCancelButton(None)   # tracing isn't safely interruptible mid-glyph
-            # Label text set ONCE here, never touched again in the loop
-            # below (which only calls setValue) -- measured directly:
-            # calling setLabelText every iteration was the dominant
-            # cost of this whole progress-update mechanism, more than
-            # setValue or processEvents combined (~13% of total load
-            # time with a live "U+XXXX (i/n)" label vs. ~5% with the
-            # label left untouched and just the bar's own fill
-            # animating) -- apparently from Qt's own internal layout
-            # remeasurement a text CHANGE triggers, largely independent
-            # of the string's own length or content. The percentage
-            # bar itself still updates live via setValue below; only
-            # the per-glyph text churn is gone.
-            #
-            # Confirmed as a real, reported crash otherwise: this
-            # QProgressDialog's own WindowModal modality only actually
-            # blocks input once the dialog has become VISIBLE, which
-            # setMinimumDuration deliberately delays -- for a rebuild
-            # that finishes quickly, or during whatever time remains
-            # before that threshold even for a slower one, the main
-            # window stays fully interactive while processEvents()
-            # below keeps pumping the event loop. That let a SECOND
-            # project-switching action (a different button click,
-            # itself reentering this exact method) run to completion
-            # in the middle of THIS call's own for loop below --
-            # reassigning self.project and rebuilding the list against
-            # the NEW project, only for this call's own loop to resume
-            # afterward and keep appending items from ITS OWN, now-
-            # stale cps (captured from the OLD project, before any of
-            # this happened) on top of it. Selecting one of those
-            # leftover stale items later crashed with a KeyError, since
-            # its codepoint was never in the project current by then.
-            # Explicitly disabling the whole window -- not relying on
-            # the progress dialog's own, timing-dependent modality --
-            # closes that window regardless of how long the rebuild
-            # itself takes.
-            self.setEnabled(False)
-        try:
+        def build(step=None):
             for i, cp in enumerate(cps):
                 item = QListWidgetItem()
                 item.setData(Qt.UserRole, cp)
                 item.setToolTip(f"U+{cp:04X}")
                 self.glyph_list.addItem(item)
                 self._refresh_glyph_icon(cp)
-                if progress is not None:
-                    progress.setValue(i + 1)
-                    QApplication.processEvents()
-        finally:
-            if progress is not None:
-                self.setEnabled(True)
-                progress.close()
+                if step is not None:
+                    step(i + 1)
+
+        # show_progress: callers that may have to TRACE many glyphs for
+        # the first time (project load, folder import, batch File... add,
+        # capture commit) -- tracing is what's slow; a rebuild of
+        # already-traced glyphs reuses _paths_cache and is quick, so the
+        # many other, single-glyph callers leave this off. Progress goes
+        # through _status_progress (status bar, input blocked meanwhile)
+        # -- see its own docstring, and the reentrancy crash note there,
+        # for why input must be blocked while step() pumps the event
+        # loop: a second project-switching action could otherwise run in
+        # the middle of this loop and leave stale items from the OLD
+        # project's cps behind (a confirmed KeyError on selection).
+        if show_progress:
+            with self._status_progress("Reading glyphs\u2026", len(cps)) as step:
+                build(step)
+        else:
+            build()
         self.coverage_label.setText(f"{len(self.project.glyphs)} glyphs")
         self._fix_left_pane_width()
 
@@ -8328,6 +8528,74 @@ class MainWindow(QMainWindow):
         set until either another message replaces it, or the user loads
         a different glyph (see _load_glyph_into_canvas's own clear)."""
         self.status_message_label.setText(text)
+
+    @contextmanager
+    def _status_progress(self, label: str, total: int):
+        """Shows `label` plus a progress bar in the status bar for the
+        duration of the with-block and yields step(n) to advance it.
+        Always shown, whatever the count -- the user's explicit choice:
+        one mechanism, always in the status bar, never a pop-up.
+
+        Input to the main window is BLOCKED (not the window disabled)
+        for the duration -- the same protection the old pop-up path got
+        from setEnabled(False), see _refresh_glyph_list's comment on the
+        reentrancy crash it prevents, since step() pumps the event loop.
+        Blocked rather than disabled because disabling the main window
+        also disables -- and greys out -- the status bar, i.e. the very
+        progress bar meant to be watched. A busy cursor makes the
+        blocked state visible.
+
+        Nestable (an inner block just retargets the bar and restores the
+        outer label/range on exit) so a caller doesn't need to know
+        whether something above it already started one."""
+        if not self.isVisible():
+            # Main window hidden -- the Capture session hides it for its
+            # whole duration, and Commit All Assigned rebuilds the glyph
+            # list from there. Its status bar isn't on screen, so there's
+            # nothing to show; and pumping the event loop would let the
+            # still-visible Capture window take a second Commit click
+            # mid-rebuild, which the input blocker (main window only)
+            # wouldn't stop. Busy cursor only, no event pumping.
+            QApplication.setOverrideCursor(Qt.BusyCursor)
+            try:
+                yield lambda _done: None
+            finally:
+                QApplication.restoreOverrideCursor()
+            return
+        bar = self.status_progress
+        outer = (bar.isVisible(), bar.maximum(), bar.value(), self.status_message_label.text())
+        bar.setRange(0, max(1, total))
+        bar.setValue(0)
+        bar.setVisible(True)
+        # Label text set ONCE, never per step -- measured during the
+        # original pop-up's optimization: a per-item text change was the
+        # dominant cost of progress reporting (~13% of load time vs ~5%
+        # for the bar alone), from Qt's own relayout on a text change.
+        self.status_message_label.setText(label)
+        nested = self._busy_filter is not None
+        if not nested:
+            self._busy_filter = _InputBlocker(self)
+            QApplication.instance().installEventFilter(self._busy_filter)
+            QApplication.setOverrideCursor(Qt.BusyCursor)
+        QApplication.processEvents()   # paint the bar before the first slow step
+
+        def step(done: int) -> None:
+            bar.setValue(done)
+            QApplication.processEvents()
+
+        try:
+            yield step
+        finally:
+            if not nested:
+                QApplication.instance().removeEventFilter(self._busy_filter)
+                self._busy_filter = None
+                QApplication.restoreOverrideCursor()
+                bar.setVisible(False)
+                self.status_message_label.setText(outer[3])
+            else:
+                bar.setRange(0, outer[1])
+                bar.setValue(outer[2])
+                self.status_message_label.setText(outer[3])
 
     def _refresh_metrics_label(self):
         if not self.project:

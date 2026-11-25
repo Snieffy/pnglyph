@@ -1,5 +1,5 @@
 # PNGlyph: PNG glyph images to TrueType fonts
-**Version:** 2.0 | **Python:** 3.10+ | **License:** GPLv3 | **GUI:** PySide6 (Qt 6)
+**Version:** 2.1 | **Python:** 3.10+ | **License:** GPLv3 | **GUI:** PySide6 (Qt 6)
 
 A small, standalone tool for turning a set of PNG stroke-skeleton images
 (one file per character, named `u<hex>.png`, e.g. `u0041.png` = `A`) into
@@ -22,6 +22,7 @@ Sibling project: [KIUT -- Ulticap and Ultiboard designs to KiCad](https://github
 - [Features](#features)
 - [Running it](#running-it)
 - [Architecture](#architecture)
+- [What's new in 2.1](#whats-new-in-21)
 - [What's new in 2.0](#whats-new-in-20)
 - [License](#license)
 - [Contributing](#contributing)
@@ -146,6 +147,28 @@ pnglyph.py       Entry point: `python3 pnglyph.py`
 Each `core/geometry.py` edit function is a small, pure, independently
 testable operation -- the same primitives a GUI drag calls interactively
 and a saved recipe step replays non-interactively.
+
+[↑ Contents](#contents)
+
+---
+
+## What's new in 2.1
+
+- **Add Glyph -> File:** files named with nothing but a number
+  (`000.png`..`255.png`, as a font exporter writes them out in byte
+  order) can be read as **character codes in a chosen code page** -- tick
+  the option in the Assign codepoints window and every row is filled at
+  once (CP437 by default: `065.png` = A, `001.png` = ☺). Numbers above
+  255 and bytes with no glyph stay blank; codes you typed yourself are
+  never replaced.
+- Unrecognized files in that window are now ordered by number value
+  (`9.png` before `10.png`), not plain text order.
+- **Progress in the status bar:** opening a project, importing a
+  folder, adding a batch of files and reading them into the Assign
+  codepoints window now all show a progress bar in the status bar
+  ("Reading glyphs… 120 / 252") instead of appearing to stall; the
+  window ignores clicks until it's done. Replaces the old pop-up
+  progress window.
 
 [↑ Contents](#contents)
 

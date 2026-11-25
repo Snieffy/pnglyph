@@ -73,6 +73,10 @@ CODEPAGES: list[tuple[str, str]] = [
     ("utf-8", "UTF-8"),
 ]
 
+# The single-byte subset -- what "Filenames are character codes" offers. A
+# filename number is a byte value, which UTF-8 gives no meaning to.
+BYTE_CODEPAGES: list[tuple[str, str]] = [c for c in CODEPAGES if c[0] != "utf-8"]
+
 # Separators, never counted as a character: they let the text file be
 # laid out freely (one row per screen line, spaces between groups...).
 # Matched on the DECODED character, and for raw bytes on 0x09/0x0A/
@@ -128,22 +132,42 @@ def decode_assignment_file(data: bytes, codepage: str) -> list[DecodedItem]:
         if b in _SEPARATOR_BYTES:
             continue
         src = f"0x{b:02X}"
-        if codepage == "cp437-display":
-            ch = cp437_display_char(b)
-            if ch is None:
-                items.append(DecodedItem(None, src, "0x00 has no glyph"))
-                continue
-        else:
-            try:
-                ch = bytes([b]).decode(codepage)
-            except UnicodeDecodeError:
-                items.append(DecodedItem(None, src, f"undefined in {codepage.upper()}"))
-                continue
-        if unicodedata.category(ch) == "Cc":
-            items.append(DecodedItem(None, src, "control code, no glyph"))
+        ch, problem = byte_to_char(b, codepage)
+        if ch is None:
+            items.append(DecodedItem(None, src, problem))
             continue
         items.append(DecodedItem(ord(ch), ch if ch.isprintable() else src))
     return items
+
+
+def byte_to_char(byte: int, codepage: str) -> tuple[str | None, str | None]:
+    """The character single-byte codepage `codepage` gives `byte`, as
+    (char, None) -- or (None, reason) when that byte can't become a
+    glyph (0x00 under the screen-glyph table, a byte the codepage leaves
+    undefined, or a control code).
+
+    The ONE place a byte gets its meaning, shared by the text-file
+    reader above and by "Filenames are character codes" in the Add glyph ->
+    File assignment window, so both can never disagree about what, say,
+    CP437 0x0A means. Separator handling is deliberately NOT here: a
+    space/tab/CR/LF byte only separates inside a text file, whereas a
+    file named 010.png really does mean byte 0x0A (◙ on the DOS screen).
+    `codepage` must be one of the single-byte ids in CODEPAGES (not
+    "utf-8", which has no byte-to-character meaning on its own)."""
+    if not 0 <= byte <= 0xFF:
+        return None, "not a byte (above 255)"
+    if codepage == "cp437-display":
+        ch = cp437_display_char(byte)
+        if ch is None:
+            return None, "0x00 has no glyph"
+    else:
+        try:
+            ch = bytes([byte]).decode(codepage)
+        except UnicodeDecodeError:
+            return None, f"undefined in {codepage.upper()}"
+    if unicodedata.category(ch) == "Cc":
+        return None, "control code, no glyph"
+    return ch, None
 
 
 def guess_codepage(data: bytes) -> str:

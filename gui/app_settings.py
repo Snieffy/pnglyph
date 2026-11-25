@@ -26,6 +26,7 @@ _KEY_PICKER_PT = "picker/font_point_size"
 _KEY_PICKER_IN_FONT = "picker/only_in_font"
 _KEY_PICKER_PANEL = "capture/picker_panel_visible"
 _KEY_ICON_TOOLBAR = "ui/icon_toolbar_visible"
+_KEY_BYTE_FILENAME_CODEPAGE = "assign/byte_filename_codepage"
 
 
 def _settings() -> QSettings:
@@ -169,3 +170,18 @@ def clear_all_persistent_settings() -> None:
     s = _settings()
     s.clear()
     s.sync()
+
+
+def get_byte_filename_codepage() -> str:
+    """The codepage last chosen for "Filenames are character codes in code
+    page" (Add glyph -> File assignment window). Only the CHOICE of
+    codepage is remembered -- the checkbox itself starts unticked for
+    every batch, the same per-batch opt-in as "Overwrite existing
+    glyphs without asking", since reading filenames as bytes is a
+    decision about one particular set of files, not a standing
+    preference. Defaults to the DOS screen-glyph CP437 reading."""
+    return str(_settings().value(_KEY_BYTE_FILENAME_CODEPAGE, "cp437-display"))
+
+
+def remember_byte_filename_codepage(codepage: str) -> None:
+    _settings().setValue(_KEY_BYTE_FILENAME_CODEPAGE, codepage)
